@@ -46,7 +46,7 @@ testar o conjunto completo).
 - `PORT` (padrão 8080)
 - `DATA_DIR` (padrão: `/app/data` se existir, senão `./data`)
 - `GEMINI_API_KEY` (opcional; sem ela, a IA fica no modo honesto descrito acima)
-- `GEMINI_MODEL` (padrão `gemini-3.8-flash`, com fallback automático para o mesmo modelo se o configurado der 404)
+- `GEMINI_MODEL` (padrão `gemini-3.5-flash-lite`; o modelo efetivo é sempre o Flash-Lite em primeiro, mesmo que esta variável aponte para outro modelo, e em cota 429 não há retry nem troca de modelo)
 - `GEMINI_IMAGE_MODEL` (padrão `gemini-2.5-flash-image`)
 - `BRAVE_API_KEY` (opcional; com ela, a busca de protocolos usa resultados reais da web antes de responder; sem ela, o Gemini responde só com o conhecimento do modelo)
 

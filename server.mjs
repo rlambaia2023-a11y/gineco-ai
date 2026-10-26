@@ -9,8 +9,9 @@
 //    - IA: só Gemini, sem OpenAI. Se GEMINI_API_KEY estiver configurada,
 //      chama o Gemini pela API nativa generateContent
 //      (https://generativelanguage.googleapis.com/v1beta/models/...:generateContent),
-//      modelo GEMINI_MODEL (padrão gemini-3.8-flash, com fallback para o
-//      mesmo modelo se o configurado der 404). Imagem pelo modelo
+//      modelo efetivo gemini-3.5-flash-lite (primeiro da lista, mesmo
+//      que GEMINI_MODEL esteja configurado para outro modelo; 500/dia
+//      no plano grátis, contra 20/dia do gemini-3.8-flash). Imagem pelo modelo
 //      gemini-2.5-flash-image da API nativa do Gemini.
 //      Sem chave, a IA devolve uma resposta honesta (sem inventar resposta
 //      médica): validação de escopo por palavras-chave, aviso de IA não
@@ -30,6 +31,14 @@ const UPLOAD_DIR = path.join(DATA_DIR, 'uploads')
 const DB_FILE = path.join(DATA_DIR, 'gineco-db.json')
 const GEMINI_KEY = process.env.GEMINI_API_KEY || ''
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.5-flash-lite'
+// Pacote grátis (2026-10-26): Flash-Lite sempre primeiro, mesmo que
+// GEMINI_MODEL na Railway ainda aponte para o 3.8-flash (20/dia).
+// Ordem: Lite (500/dia) -> modelo configurado -> 3.8 -> 3.7, só para
+// 404 (modelo indisponível). Em cota (429) não há retry nem troca de
+// modelo: para na hora, para não queimar a cota dos outros modelos.
+const GEMINI_LITE = 'gemini-3.5-flash-lite'
+const GEMINI_MODELS = [...new Set([GEMINI_LITE, GEMINI_MODEL, 'gemini-3.8-flash', 'gemini-3.7-flash'])]
+const GEMINI_EFFECTIVE_MODEL = GEMINI_MODELS[0]
 const GEMINI_BASE = (process.env.GEMINI_BASE_URL || 'https://generativelanguage.googleapis.com/v1beta/openai/').replace(/\/$/, '')
 const GEMINI_IMAGE_MODEL = process.env.GEMINI_IMAGE_MODEL || 'gemini-2.5-flash-image'
 
@@ -206,6 +215,25 @@ function extractTopic(prompt) {
   const quoted = String(prompt || '').match(/"([^"]{5,200})"/)
   return quoted ? quoted[1] : ''
 }
+// Cache no servidor (segunda camada, além do cache do frontend em
+// Search.jsx): pergunta já respondida e salva no histórico volta sem
+// chamar o Gemini, sem gastar cota. Só vale para busca em texto (sem
+// schema JSON). A pergunta do histórico aparece, normalizada, dentro
+// do prompt longo da busca, por isso a comparação é por inclusão da
+// pergunta inteira normalizada, não por palavra solta.
+function normText(s) {
+  return String(s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, ' ').trim().replace(/\s+/g, ' ')
+}
+function findCachedAiResult(prompt) {
+  const normPrompt = normText(prompt)
+  if (!normPrompt) return null
+  for (const entry of [...db.history].reverse()) {
+    const q = normText(entry.query)
+    if (q.length < 8 || !entry.result) continue
+    if (normPrompt.includes(q)) return entry
+  }
+  return null
+}
 
 async function callGemini(prompt, schema, withWeb = false) {
   callGemini.startedAt = Date.now()
@@ -224,11 +252,11 @@ async function callGemini(prompt, schema, withWeb = false) {
     }
   }
   // 503 do Gemini = sobrecarga temporária do modelo (documentado pelo
-  // Google; comum no tier gratuito do gemini-3.8-flash). Por isso: tenta
-  // cada modelo até 3 vezes com espera crescente e, se persistir, cai
-  // para o gemini-3.7-flash, apontado pelo Google como alternativa
-  // enquanto o 3.8 é estabilizado.
-  const models = [...new Set([GEMINI_MODEL, 'gemini-3.5-flash-lite', 'gemini-3.8-flash', 'gemini-3.7-flash'])]
+  // Google). Por isso, só 503 tem 1 retry com espera crescente, dentro
+  // do mesmo modelo. 429 (cota) NÃO tem retry nem troca de modelo:
+  // joga o erro na hora, para não queimar a cota do modelo seguinte.
+  // 404 (modelo indisponível) é o único caso que passa ao próximo modelo.
+  const models = GEMINI_MODELS
   let lastError = null
   for (const model of models) {
    for (let attempt = 1; attempt <= 2; attempt++) {
@@ -272,8 +300,9 @@ async function callGemini(prompt, schema, withWeb = false) {
     clearTimeout(timer)
     const data = await res.json().catch(() => ({}))
     if (!res.ok) {
+      // Sem retry em cota: para imediatamente, sem tentar o próximo modelo.
+      if (res.status === 429) throw new Error(`Gemini quota exceeded (429) no modelo ${model}: ${data?.error?.message || ''}`.trim())
       lastError = new Error(data?.error?.message || `Gemini retornou ${res.status}`)
-      if (res.status === 429) break
       if (res.status === 503 && attempt < 2) {
         await new Promise((r) => setTimeout(r, attempt * 3000))
         continue
@@ -417,21 +446,29 @@ async function handleApi(req, res, url) {
       if (!prompt) return json(res, 400, { error: 'Prompt vazio' })
       let result
       if (GEMINI_KEY) {
+        // Cache no servidor antes de qualquer chamada: pergunta já
+        // respondida volta do histórico, sem gastar cota do Gemini.
+        // Só para busca em texto; schema JSON (protocolo) não usa cache.
+        if (!body.response_json_schema) {
+          const cached = findCachedAiResult(prompt)
+          if (cached) return json(res, 200, { result: cached.result, ia_configurada: true, provedor: 'gemini', modelo: GEMINI_EFFECTIVE_MODEL, cache: true })
+        }
         try { result = await callGemini(prompt, body.response_json_schema || null, Boolean(body.add_context_from_internet)) }
         catch (e) {
           // Cota do Google em linguagem clara: antes, o texto cru em
           // inglês do Google ia parar na tela e parecia erro genérico.
+          // Sem o "20/dia" fixo: com o Lite em primeiro, a cota é outra.
           const msg = String(e.message || '')
           const retry = msg.match(/retry in ([0-9]+h[0-9]+m[0-9.]+s)/i)
           if (/quota exceeded|exceeded your current quota/i.test(msg)) {
-            return json(res, 502, { error: `Cota gratuita do Gemini de hoje esgotada (20 requisições/dia)${retry ? `, tente de novo em cerca de ${retry[1].replace(/\.[0-9]+s$/, 's')}` : ''}. Enquanto isso, a busca mostra os protocolos já salvos, quando houver um sobre o tema.` })
+            return json(res, 502, { error: `Cota gratuita do Gemini esgotada para o modelo em uso${retry ? `, tente de novo em cerca de ${retry[1].replace(/\.[0-9]+s$/, 's')}` : ''}. Enquanto isso, a busca mostra os protocolos já salvos, quando houver um sobre o tema.` })
           }
           return json(res, 502, { error: `Falha na IA: ${msg}` })
         }
       } else {
         result = fallbackAi(prompt, body.response_json_schema || null)
       }
-      return json(res, 200, { result, ia_configurada: Boolean(GEMINI_KEY), provedor: GEMINI_KEY ? 'gemini' : 'nenhum', modelo: GEMINI_MODEL })
+      return json(res, 200, { result, ia_configurada: Boolean(GEMINI_KEY), provedor: GEMINI_KEY ? 'gemini' : 'nenhum', modelo: GEMINI_EFFECTIVE_MODEL, modelo_configurado: GEMINI_MODEL })
     }
     if (req.method === 'POST' && pathname === '/api/ai/image') {
       const body = await readBody(req)
@@ -484,7 +521,7 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost')
   if (url.pathname === '/health') {
     res.writeHead(200, { 'content-type': 'application/json' })
-    res.end(JSON.stringify({ ok: true, app: 'gineco-ai', ia_configurada: Boolean(GEMINI_KEY), provedor: GEMINI_KEY ? 'gemini' : 'nenhum', modelo: GEMINI_MODEL, protocolos: db.protocols.length, propagandas: db.advertisements.length, historico: db.history.length, data_dir: DATA_DIR }))
+    res.end(JSON.stringify({ ok: true, app: 'gineco-ai', ia_configurada: Boolean(GEMINI_KEY), provedor: GEMINI_KEY ? 'gemini' : 'nenhum', modelo: GEMINI_EFFECTIVE_MODEL, modelo_configurado: GEMINI_MODEL, protocolos: db.protocols.length, propagandas: db.advertisements.length, historico: db.history.length, data_dir: DATA_DIR }))
     return
   }
   if (url.pathname.startsWith('/api/')) {

@@ -10,7 +10,7 @@ O arquivo `src/api/base44Client.js` é só um adaptador com o mesmo formato
 que as páginas já usavam; ele chama a API própria, não o Base44.
 
 Dados em DATA_DIR ou `/app/data` (volume na Railway). Sem volume, os dados
-somem a cada redeploy. IA: só Gemini, sem OpenAI. Com GEMINI_API_KEY usa Gemini (modelo gemini-3.8-flash); sem chave, o
+somem a cada redeploy. IA: só Gemini, sem OpenAI. Com GEMINI_API_KEY usa Gemini (modelo efetivo gemini-3.5-flash-lite em primeiro, sem retry em cota 429); sem chave, o
 servidor devolve resposta honesta sem inventar conduta clínica (ver
 `server.mjs`, função fallbackAi). Nunca inventar diretriz, artigo ou link.
 
