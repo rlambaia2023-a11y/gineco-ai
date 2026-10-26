@@ -219,9 +219,15 @@ async function callGemini(prompt, schema, withWeb = false) {
       }
     }
   }
-  const models = [...new Set([GEMINI_MODEL, 'gemini-3.8-flash'])]
+  // 503 do Gemini = sobrecarga temporária do modelo (documentado pelo
+  // Google; comum no tier gratuito do gemini-3.8-flash). Por isso: tenta
+  // cada modelo até 3 vezes com espera crescente e, se persistir, cai
+  // para o gemini-3.7-flash, apontado pelo Google como alternativa
+  // enquanto o 3.8 é estabilizado.
+  const models = [...new Set([GEMINI_MODEL, 'gemini-3.8-flash', 'gemini-3.7-flash'])]
   let lastError = null
   for (const model of models) {
+   for (let attempt = 1; attempt <= 3; attempt++) {
     const body = {
       model,
       messages: [
@@ -239,6 +245,10 @@ async function callGemini(prompt, schema, withWeb = false) {
     const data = await res.json().catch(() => ({}))
     if (!res.ok) {
       lastError = new Error(data?.error?.message || `Gemini retornou ${res.status}`)
+      if (res.status === 503 && attempt < 3) {
+        await new Promise((r) => setTimeout(r, attempt * 3000))
+        continue
+      }
       if (res.status !== 404 || model === models[models.length - 1]) break
       continue
     }
@@ -251,6 +261,7 @@ async function callGemini(prompt, schema, withWeb = false) {
       catch { throw new Error('Gemini devolveu JSON inválido para o protocolo') }
     }
     return content
+   }
   }
   throw lastError || new Error('Falha na IA')
 }
