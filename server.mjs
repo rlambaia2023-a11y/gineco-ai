@@ -163,7 +163,10 @@ function inScope(text) {
 function fallbackAi(prompt, schema) {
   const p = String(prompt || '')
   if (/validador especializado|SIM ou NAO/i.test(p)) {
-    const quoted = p.match(/"([\s\S]{1,2000})"/)
+    // Não ganancioso: antes, o match ia até a ÚLTIMA aspa do prompt e
+    // engolia as instruções (que citam ginecologia), então qualquer
+    // pergunta passava como dentro do escopo no modo sem chave.
+    const quoted = p.match(/"([\s\S]{1,2000}?)"/)
     return inScope(quoted ? quoted[1] : p) ? 'SIM' : 'NAO'
   }
   if (/traduza/i.test(p)) return 'TEXTO JÁ EM PORTUGUÊS'

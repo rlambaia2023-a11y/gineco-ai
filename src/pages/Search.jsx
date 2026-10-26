@@ -8,29 +8,28 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Search as SearchIcon, Sparkles, Loader2, BookOpen, AlertCircle, AlertTriangle } from "lucide-react";
 import SearchResult from "../components/search/SearchResult";
 
+// Validação de escopo local (mesma lista do servidor). Antes, a busca
+// fazia DUAS chamadas à IA em sequência (validação + busca real), o que
+// dobrava o tempo e fazia a busca falhar sempre que a validação falhava
+// ou devolvia "SIM." com ponto em vez de "SIM" exato.
+const SCOPE_WORDS = ['gineco', 'obstetr', 'gestação', 'gestacao', 'gravidez', 'grávida', 'gravida', 'parto', 'puerpério', 'puerperio', 'menopausa', 'climatério', 'climaterio', 'contracept', 'fertil', 'endometriose', 'ovário', 'ovario', 'útero', 'utero', 'mama', 'colo do útero', 'colo uterino', 'pré-eclâmpsia', 'pre-eclampsia', 'eclampsia', 'sop', 'ovários policísticos', 'ovarios policisticos', 'mioma', 'candidíase', 'candidiase', 'vagin', 'hpv', 'citologia', 'papanicolau', 'amament', 'aleitamento', 'abort', 'infertil', 'saúde da mulher', 'saude da mulher', 'dpp', 'idade gestacional', 'ultrassom obst', 'pré-natal', 'pre-natal', 'cesárea', 'cesarea', 'indução', 'inducao', 'bishop', 'sangramento uterino', 'tpm', 'menstrua'];
+function inScopeLocal(text) {
+  const q = String(text || '').toLowerCase();
+  return SCOPE_WORDS.some((w) => q.includes(w));
+}
+
 export default function Search() {
   const [query, setQuery] = useState("");
   const [result, setResult] = useState(null);
   const [sources, setSources] = useState([]);
   const [isOutOfScope, setIsOutOfScope] = useState(false);
+  const [searchError, setSearchError] = useState(null);
 
   const searchMutation = useMutation({
     mutationFn: async (searchQuery) => {
-      // Primeiro valida se está dentro do escopo
-      const validation = await base44.integrations.Core.InvokeLLM({
-        prompt: `Você é um validador especializado. Analise se a seguinte pergunta/busca está relacionada a GINECOLOGIA ou OBSTETRÍCIA:
-
-"${searchQuery}"
-
-Responda APENAS com:
-- "SIM" se a pergunta for sobre ginecologia, obstetrícia, saúde da mulher, gestação, parto, doenças ginecológicas, contraceptivos, fertilidade, menopausa ou temas relacionados
-- "NAO" se for sobre qualquer outra área médica ou assunto não relacionado
-
-Responda com uma única palavra: SIM ou NAO`,
-        add_context_from_internet: false
-      });
-
-      if (validation.trim().toUpperCase() !== "SIM") {
+      // Validação local e instantânea de escopo: uma única chamada à IA
+      // (a busca real) em vez de duas em sequência.
+      if (!inScopeLocal(searchQuery)) {
         setIsOutOfScope(true);
         return null;
       }
@@ -102,26 +101,38 @@ Mantenha um tom profissional e baseado em evidências científicas da área.`,
 
       setSources(extractedSources);
 
-      // Save to history
-      await base44.entities.SearchHistory.create({
-        query: searchQuery,
-        result: response,
-        search_type: "busca_geral",
-        sources: extractedSources
-      });
+      // Salvar no histórico não pode quebrar o resultado: se falhar,
+      // a resposta continua sendo mostrada.
+      try {
+        await base44.entities.SearchHistory.create({
+          query: searchQuery,
+          result: response,
+          search_type: "busca_geral",
+          sources: extractedSources
+        });
+      } catch (historyError) {
+        console.error("Falha ao salvar histórico (resposta mantida):", historyError);
+      }
 
       return response;
     },
     onSuccess: (data) => {
+      setSearchError(null);
       if (data) {
         setResult(data);
       }
+    },
+    onError: (error) => {
+      console.error("Erro na busca:", error);
+      setSearchError(error?.message || "Erro ao realizar a pesquisa. Por favor, tente novamente.");
     },
   });
 
   const handleSearch = () => {
     if (query.trim()) {
       setIsOutOfScope(false);
+      setSearchError(null);
+      setResult(null);
       searchMutation.mutate(query);
     }
   };
@@ -192,11 +203,12 @@ Mantenha um tom profissional e baseado em evidências científicas da área.`,
           </CardContent>
         </Card>
 
-        {searchMutation.isError && (
+        {(searchMutation.isError || searchError) && (
           <Alert variant="destructive" className="mb-6">
             <AlertCircle className="w-4 h-4" />
             <AlertDescription>
-              Erro ao realizar a pesquisa. Por favor, tente novamente.
+              {searchError || "Erro ao realizar a pesquisa. Por favor, tente novamente."}
+              {String(searchError || "").includes("Gemini") ? " A IA do Google está demorando ou sobrecarregada no momento; aguarde alguns minutos e tente de novo." : ""}
             </AlertDescription>
           </Alert>
         )}
