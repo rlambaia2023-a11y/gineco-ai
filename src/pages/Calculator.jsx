@@ -9,6 +9,19 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 
+// Data "AAAA-MM-DD" interpretada no fuso local. Antes, new Date(dum)
+// era meia-noite UTC, que no Brasil vira o dia anterior, e a DPP saía
+// 1 dia antes do correto.
+function parseDateLocal(value) {
+  const [y, m, d] = String(value).split("-").map(Number);
+  return new Date(y, m - 1, d);
+}
+function todayMidnight() {
+  const now = new Date();
+  now.setHours(0, 0, 0, 0);
+  return now;
+}
+
 export default function Calculator() {
   // Estado para cálculo por DUM
   const [dum, setDum] = useState("");
@@ -41,11 +54,11 @@ export default function Calculator() {
       return;
     }
 
-    const dumDate = new Date(dum);
-    const today = new Date();
-    
+    const dumDate = parseDateLocal(dum);
+    const today = todayMidnight();
+
     const diffTime = Math.abs(today - dumDate);
-    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+    const diffDays = Math.round(diffTime / (1000 * 60 * 60 * 24));
     
     const weeks = Math.floor(diffDays / 7);
     const days = diffDays % 7;
@@ -73,11 +86,11 @@ export default function Calculator() {
       return;
     }
 
-    const usgDateObj = new Date(usgDate);
-    const today = new Date();
-    
+    const usgDateObj = parseDateLocal(usgDate);
+    const today = todayMidnight();
+
     const diffTime = Math.abs(today - usgDateObj);
-    const daysSinceUsg = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+    const daysSinceUsg = Math.round(diffTime / (1000 * 60 * 60 * 24));
     
     const usgWeeksInt = parseInt(usgWeeks) || 0;
     const usgDaysInt = parseInt(usgDays) || 0;
@@ -114,15 +127,17 @@ export default function Calculator() {
       return;
     }
 
-    const dbpVal = parseFloat(dbp);
-    const ccVal = parseFloat(cc);
-    const caVal = parseFloat(ca);
-    const flVal = parseFloat(fl);
+    // Fórmula de Hadlock (1985): log10 do peso, com as medidas em cm.
+    // A tela pede mm, então converte para cm antes de calcular. O DBP
+    // não entra nesta variante da fórmula (usa CC, CA e FL).
+    const ccVal = parseFloat(cc) / 10;
+    const caVal = parseFloat(ca) / 10;
+    const flVal = parseFloat(fl) / 10;
 
-    const logWeight = 1.326 - 0.00326 * caVal * flVal + 
-                     0.0107 * ccVal + 0.0438 * caVal + 
+    const logWeight = 1.326 - 0.00326 * caVal * flVal +
+                     0.0107 * ccVal + 0.0438 * caVal +
                      0.158 * flVal;
-    const weight = Math.exp(logWeight);
+    const weight = Math.pow(10, logWeight);
     
     let percentil = "";
     if (weight < 2500) percentil = "Abaixo do esperado";
@@ -401,7 +416,7 @@ export default function Calculator() {
                   <Alert className="border-purple-200 bg-purple-50">
                     <AlertCircle className="w-4 h-4 text-purple-600" />
                     <AlertDescription className="text-sm text-gray-700">
-                      Insira as medidas biométricas do ultrassom em milímetros (mm)
+                      Insira as medidas biométricas do ultrassom em milímetros (mm). A fórmula de Hadlock usa CC, CA e FL (o DBP fica registrado como dado do exame).
                     </AlertDescription>
                   </Alert>
 

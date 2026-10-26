@@ -205,6 +205,7 @@ function extractTopic(prompt) {
 }
 
 async function callGemini(prompt, schema, withWeb = false) {
+  callGemini.startedAt = Date.now()
   // Gemini pela base compatível com OpenAI (mesmo padrão do Meta 2).
   // Se o modelo configurado der 404 (modelo descontinuado para novos
   // usuários, como aconteceu com o gemini-2.5-flash), tenta de novo com
@@ -237,11 +238,28 @@ async function callGemini(prompt, schema, withWeb = false) {
       temperature: 0.3,
     }
     if (schema) body.response_format = { type: 'json_object' }
-    const res = await fetch(`${GEMINI_BASE}/chat/completions`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', authorization: `Bearer ${GEMINI_KEY}` },
-      body: JSON.stringify(body),
-    })
+    // Sem timeout, um fetch travado do Gemini deixava a chamada da IA
+    // pendurada por minutos (visto ao vivo em 2026-10-26). Limite de 45s
+    // por tentativa e teto total de 90s para a chamada inteira.
+    const startedAt = callGemini.startedAt || (callGemini.startedAt = Date.now())
+    if (Date.now() - startedAt > 90000) throw lastError || new Error('Gemini demorou mais de 90s para responder')
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), 45000)
+    let res
+    try {
+      res = await fetch(`${GEMINI_BASE}/chat/completions`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${GEMINI_KEY}` },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      })
+    } catch (e) {
+      clearTimeout(timer)
+      lastError = new Error(e.name === 'AbortError' ? 'Gemini demorou mais de 45s para responder' : e.message)
+      if (attempt < 3) { await new Promise((r) => setTimeout(r, attempt * 3000)); continue }
+      break
+    }
+    clearTimeout(timer)
     const data = await res.json().catch(() => ({}))
     if (!res.ok) {
       lastError = new Error(data?.error?.message || `Gemini retornou ${res.status}`)
