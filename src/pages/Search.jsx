@@ -27,6 +27,19 @@ export default function Search() {
 
   const searchMutation = useMutation({
     mutationFn: async (searchQuery) => {
+      // Cache: pergunta idêntica já respondida antes não gasta cota do
+      // Gemini; devolve o resultado salvo no histórico.
+      try {
+        const history = await base44.entities.SearchHistory.list("-created_date");
+        const normQ = String(searchQuery || '').trim().toLowerCase();
+        const cached = history.find((h) => String(h.query || '').trim().toLowerCase() === normQ);
+        if (cached) {
+          setSources(cached.sources || []);
+          return cached.result;
+        }
+      } catch (cacheError) {
+        console.error("Falha no cache do histórico, seguindo para a IA:", cacheError);
+      }
       // Validação local e instantânea de escopo: uma única chamada à IA
       // (a busca real) em vez de duas em sequência.
       if (!inScopeLocal(searchQuery)) {
@@ -131,14 +144,26 @@ Mantenha um tom profissional e baseado em evidências científicas da área.`,
       try {
         const protocols = await base44.entities.Protocol.list("-created_date");
         const norm = (s) => String(s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-        const tokens = norm(query).split(/[^a-z0-9]+/).filter((w) => w.length > 3);
-        const match = protocols.find((proto) => {
-          const hay = norm(`${proto.name} ${proto.summary} ${(proto.tags || []).join(' ')}`);
-          return tokens.some((tok) => hay.includes(tok));
-        });
-        if (match) {
-          setSources(match.fonte_oficial ? [match.fonte_oficial] : []);
-          setResult(`${match.name}\n\n${match.summary}\n\n${match.full_content || ''}`);
+        // Antes, o primeiro protocolo que contivesse QUALQUER token vencia:
+        // "tratamento" fez "Sangramento uterino anormal" vencer uma pergunta
+        // sobre pré-eclâmpsia. Agora: stopwords fora, pontuação por onde
+        // o token aparece (nome vale mais), e só vence com pontuação mínima.
+        const stopwords = new Set(['qual', 'quais', 'como', 'sobre', 'para', 'protocolo', 'protocolos', 'atual', 'atuais', 'tratamento', 'manejo', 'diagnostico', 'sintoma', 'sintomas']);
+        const tokens = norm(query).split(/[^a-z0-9]+/).filter((w) => w.length > 3 && !stopwords.has(w));
+        let best = null, bestScore = 0;
+        for (const proto of protocols) {
+          const name = norm(proto.name), summary = norm(proto.summary), tags = norm((proto.tags || []).join(' '));
+          let score = 0;
+          for (const tok of tokens) {
+            if (name.includes(tok)) score += 5;
+            else if (tags.includes(tok)) score += 3;
+            else if (summary.includes(tok)) score += 1;
+          }
+          if (score > bestScore) { bestScore = score; best = proto; }
+        }
+        if (best && bestScore >= 5) {
+          setSources(best.fonte_oficial ? [best.fonte_oficial] : []);
+          setResult(`${best.name}\n\n${best.summary}\n\n${best.full_content || ''}`);
         }
       } catch (fallbackError) {
         console.error("Falha no fallback para protocolo salvo:", fallbackError);

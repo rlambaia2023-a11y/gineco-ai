@@ -29,7 +29,7 @@ const DATA_DIR = process.env.DATA_DIR || (fs.existsSync('/app/data') ? '/app/dat
 const UPLOAD_DIR = path.join(DATA_DIR, 'uploads')
 const DB_FILE = path.join(DATA_DIR, 'gineco-db.json')
 const GEMINI_KEY = process.env.GEMINI_API_KEY || ''
-const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.8-flash'
+const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.5-flash-lite'
 const GEMINI_BASE = (process.env.GEMINI_BASE_URL || 'https://generativelanguage.googleapis.com/v1beta/openai/').replace(/\/$/, '')
 const GEMINI_IMAGE_MODEL = process.env.GEMINI_IMAGE_MODEL || 'gemini-2.5-flash-image'
 
@@ -228,7 +228,7 @@ async function callGemini(prompt, schema, withWeb = false) {
   // cada modelo até 3 vezes com espera crescente e, se persistir, cai
   // para o gemini-3.7-flash, apontado pelo Google como alternativa
   // enquanto o 3.8 é estabilizado.
-  const models = [...new Set([GEMINI_MODEL, 'gemini-3.8-flash', 'gemini-3.7-flash'])]
+  const models = [...new Set([GEMINI_MODEL, 'gemini-3.5-flash-lite', 'gemini-3.8-flash', 'gemini-3.7-flash'])]
   let lastError = null
   for (const model of models) {
    for (let attempt = 1; attempt <= 2; attempt++) {
@@ -273,6 +273,7 @@ async function callGemini(prompt, schema, withWeb = false) {
     const data = await res.json().catch(() => ({}))
     if (!res.ok) {
       lastError = new Error(data?.error?.message || `Gemini retornou ${res.status}`)
+      if (res.status === 429) break
       if (res.status === 503 && attempt < 2) {
         await new Promise((r) => setTimeout(r, attempt * 3000))
         continue
@@ -421,7 +422,7 @@ async function handleApi(req, res, url) {
           // Cota do Google em linguagem clara: antes, o texto cru em
           // inglês do Google ia parar na tela e parecia erro genérico.
           const msg = String(e.message || '')
-          const retry = msg.match(/retry in ([0-9hms.]+)/i)
+          const retry = msg.match(/retry in ([0-9]+h[0-9]+m[0-9.]+s)/i)
           if (/quota exceeded|exceeded your current quota/i.test(msg)) {
             return json(res, 502, { error: `Cota gratuita do Gemini de hoje esgotada (20 requisições/dia)${retry ? `, tente de novo em cerca de ${retry[1].replace(/\.[0-9]+s$/, 's')}` : ''}. Enquanto isso, a busca mostra os protocolos já salvos, quando houver um sobre o tema.` })
           }
