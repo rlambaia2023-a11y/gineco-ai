@@ -417,7 +417,16 @@ async function handleApi(req, res, url) {
       let result
       if (GEMINI_KEY) {
         try { result = await callGemini(prompt, body.response_json_schema || null, Boolean(body.add_context_from_internet)) }
-        catch (e) { return json(res, 502, { error: `Falha na IA: ${e.message}` }) }
+        catch (e) {
+          // Cota do Google em linguagem clara: antes, o texto cru em
+          // inglês do Google ia parar na tela e parecia erro genérico.
+          const msg = String(e.message || '')
+          const retry = msg.match(/retry in ([0-9hms.]+)/i)
+          if (/quota exceeded|exceeded your current quota/i.test(msg)) {
+            return json(res, 502, { error: `Cota gratuita do Gemini de hoje esgotada (20 requisições/dia)${retry ? `, tente de novo em cerca de ${retry[1].replace(/\.[0-9]+s$/, 's')}` : ''}. Enquanto isso, a busca mostra os protocolos já salvos, quando houver um sobre o tema.` })
+          }
+          return json(res, 502, { error: `Falha na IA: ${msg}` })
+        }
       } else {
         result = fallbackAi(prompt, body.response_json_schema || null)
       }

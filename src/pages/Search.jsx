@@ -122,9 +122,27 @@ Mantenha um tom profissional e baseado em evidências científicas da área.`,
         setResult(data);
       }
     },
-    onError: (error) => {
+    onError: async (error) => {
       console.error("Erro na busca:", error);
-      setSearchError(error?.message || "Erro ao realizar a pesquisa. Por favor, tente novamente.");
+      const message = error?.message || "Erro ao realizar a pesquisa. Por favor, tente novamente.";
+      setSearchError(message);
+      // Sem IA (cota esgotada, por exemplo), a busca não fica vazia:
+      // devolve o protocolo salvo sobre o tema, se houver um.
+      try {
+        const protocols = await base44.entities.Protocol.list("-created_date");
+        const norm = (s) => String(s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+        const tokens = norm(query).split(/[^a-z0-9]+/).filter((w) => w.length > 3);
+        const match = protocols.find((proto) => {
+          const hay = norm(`${proto.name} ${proto.summary} ${(proto.tags || []).join(' ')}`);
+          return tokens.some((tok) => hay.includes(tok));
+        });
+        if (match) {
+          setSources(match.fonte_oficial ? [match.fonte_oficial] : []);
+          setResult(`${match.name}\n\n${match.summary}\n\n${match.full_content || ''}`);
+        }
+      } catch (fallbackError) {
+        console.error("Falha no fallback para protocolo salvo:", fallbackError);
+      }
     },
   });
 
@@ -208,7 +226,7 @@ Mantenha um tom profissional e baseado em evidências científicas da área.`,
             <AlertCircle className="w-4 h-4" />
             <AlertDescription>
               {searchError || "Erro ao realizar a pesquisa. Por favor, tente novamente."}
-              {String(searchError || "").includes("Gemini") ? " A IA do Google está demorando ou sobrecarregada no momento; aguarde alguns minutos e tente de novo." : ""}
+              {String(searchError || "").includes("Gemini") && !String(searchError || "").includes("Cota") ? " A IA do Google está demorando ou sobrecarregada no momento; aguarde alguns minutos e tente de novo." : ""}
             </AlertDescription>
           </Alert>
         )}
