@@ -6,7 +6,12 @@
 //      montado em /app/data na Railway, os dados sobrevivem a redeploys.
 //      Sem volume, os dados são efêmeros.
 //    - Senhas: scrypt com salt, nunca em texto claro. Tokens aleatórios.
-//    - IA: se OPENAI_API_KEY estiver configurada, chama a API da OpenAI.
+//    - IA: só Gemini, sem OpenAI. Se GEMINI_API_KEY estiver configurada,
+//      chama o Gemini pela base compatível com OpenAI
+//      (https://generativelanguage.googleapis.com/v1beta/openai/),
+//      modelo GEMINI_MODEL (padrão gemini-3.8-flash, com fallback para o
+//      mesmo modelo se o configurado der 404). Imagem pelo modelo
+//      gemini-2.5-flash-image da API nativa do Gemini.
 //      Sem chave, a IA devolve uma resposta honesta (sem inventar resposta
 //      médica): validação de escopo por palavras-chave, aviso de IA não
 //      configurada com as fontes oficiais, e imagem genérica local.
@@ -23,9 +28,10 @@ const PORT = Number(process.env.PORT || 8080)
 const DATA_DIR = process.env.DATA_DIR || (fs.existsSync('/app/data') ? '/app/data' : path.join(__dirname, 'data'))
 const UPLOAD_DIR = path.join(DATA_DIR, 'uploads')
 const DB_FILE = path.join(DATA_DIR, 'gineco-db.json')
-const OPENAI_KEY = process.env.OPENAI_API_KEY || ''
-const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini'
-const OPENAI_IMAGE_MODEL = process.env.OPENAI_IMAGE_MODEL || 'gpt-image-1'
+const GEMINI_KEY = process.env.GEMINI_API_KEY || ''
+const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.8-flash'
+const GEMINI_BASE = (process.env.GEMINI_BASE_URL || 'https://generativelanguage.googleapis.com/v1beta/openai/').replace(/\/$/, '')
+const GEMINI_IMAGE_MODEL = process.env.GEMINI_IMAGE_MODEL || 'gemini-2.5-flash-image'
 
 const TYPES = {
   '.html': 'text/html; charset=utf-8',
@@ -166,7 +172,7 @@ function fallbackAi(prompt, schema) {
       status: 'NÃO_ENCONTRADO',
       name: '',
       category: 'obstetricia',
-      summary: 'IA não configurada neste servidor. Configure OPENAI_API_KEY nas variáveis da Railway para buscar e atualizar protocolos automaticamente. Enquanto isso, use os protocolos já salvos ou cadastre um manualmente.',
+      summary: 'IA não configurada neste servidor. Configure GEMINI_API_KEY nas variáveis da Railway para buscar e atualizar protocolos automaticamente. Enquanto isso, use os protocolos já salvos ou cadastre um manualmente.',
       full_content: '',
       tags: [],
       fonte_oficial: '',
@@ -174,30 +180,69 @@ function fallbackAi(prompt, schema) {
   }
   if (/título|titulo/i.test(p) && /propaganda/i.test(p)) return 'Cuidado especializado em saúde da mulher'
   if (/propaganda|marketing médico/i.test(p)) return 'Atendimento humanizado em ginecologia e obstetrícia, com foco em cuidado, experiência e bem-estar da mulher. Agende sua consulta.'
-  return `A busca por IA ainda não está configurada neste servidor, por isso não vou inventar uma resposta clínica aqui.\n\nPara ativar a busca completa, configure a variável OPENAI_API_KEY na Railway. Enquanto isso, consulte os protocolos já salvos na aba Protocolos e as fontes oficiais abaixo.\n\n## FONTES CIENTÍFICAS:\n1. FEBRASGO - Protocolos Brasileiros - https://www.febrasgo.org.br/\n2. ACOG - Guidelines Internacionais - https://www.acog.org/\n3. OMS - Diretrizes da Organização Mundial da Saúde - https://www.who.int/\n4. PubMed - Literatura Científica Indexada - https://pubmed.ncbi.nlm.nih.gov/\n\nAviso: as informações desta aplicação são para fins educacionais e de referência e não substituem o julgamento clínico nem os protocolos institucionais.`
+  return `A busca por IA ainda não está configurada neste servidor, por isso não vou inventar uma resposta clínica aqui.\n\nPara ativar a busca completa, configure a variável GEMINI_API_KEY na Railway. Enquanto isso, consulte os protocolos já salvos na aba Protocolos e as fontes oficiais abaixo.\n\n## FONTES CIENTÍFICAS:\n1. FEBRASGO - Protocolos Brasileiros - https://www.febrasgo.org.br/\n2. ACOG - Guidelines Internacionais - https://www.acog.org/\n3. OMS - Diretrizes da Organização Mundial da Saúde - https://www.who.int/\n4. PubMed - Literatura Científica Indexada - https://pubmed.ncbi.nlm.nih.gov/\n\nAviso: as informações desta aplicação são para fins educacionais e de referência e não substituem o julgamento clínico nem os protocolos institucionais.`
 }
-async function callOpenAi(prompt, schema) {
-  const body = {
-    model: OPENAI_MODEL,
-    messages: [
-      { role: 'system', content: 'Você é um assistente especializado em ginecologia e obstetrícia. Responda sempre em português brasileiro, com tom profissional e baseado em evidências. Nunca invente diretriz, artigo, autor, ano ou link: se não tiver certeza de uma fonte, diga isso e cite apenas fontes oficiais conhecidas (FEBRASGO, ACOG, OMS, Ministério da Saúde, RCOG).' },
-      { role: 'user', content: prompt },
-    ],
-    temperature: 0.3,
+async function callGemini(prompt, schema) {
+  // Gemini pela base compatível com OpenAI (mesmo padrão do Meta 2).
+  // Se o modelo configurado der 404 (modelo descontinuado para novos
+  // usuários, como aconteceu com o gemini-2.5-flash), tenta de novo com
+  // gemini-3.8-flash, sem precisar mexer na Railway.
+  const models = [...new Set([GEMINI_MODEL, 'gemini-3.8-flash'])]
+  let lastError = null
+  for (const model of models) {
+    const body = {
+      model,
+      messages: [
+        { role: 'system', content: 'Você é um assistente especializado em ginecologia e obstetrícia. Responda sempre em português brasileiro, com tom profissional e baseado em evidências. Nunca invente diretriz, artigo, autor, ano ou link: se não tiver certeza de uma fonte, diga isso e cite apenas fontes oficiais conhecidas (FEBRASGO, ACOG, OMS, Ministério da Saúde, RCOG).' },
+        { role: 'user', content: prompt },
+      ],
+      temperature: 0.3,
+    }
+    if (schema) body.response_format = { type: 'json_object' }
+    const res = await fetch(`${GEMINI_BASE}/chat/completions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${GEMINI_KEY}` },
+      body: JSON.stringify(body),
+    })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok) {
+      lastError = new Error(data?.error?.message || `Gemini retornou ${res.status}`)
+      if (res.status !== 404 || model === models[models.length - 1]) break
+      continue
+    }
+    const content = data?.choices?.[0]?.message?.content || ''
+    if (schema) {
+      const clean = String(content).replace(/```json|```/g, '').trim()
+      const start = clean.indexOf('{')
+      const end = clean.lastIndexOf('}')
+      try { return JSON.parse(start >= 0 && end > start ? clean.slice(start, end + 1) : clean) }
+      catch { throw new Error('Gemini devolveu JSON inválido para o protocolo') }
+    }
+    return content
   }
-  if (schema) body.response_format = { type: 'json_object' }
-  const res = await fetch('https://api.openai.com/v1/chat/completions', {
+  throw lastError || new Error('Falha na IA')
+}
+
+async function generateGeminiImage(prompt) {
+  // Imagem pela API nativa do Gemini (a base compatível com OpenAI não
+  // gera imagem). Se falhar, quem chama decide o fallback.
+  const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_IMAGE_MODEL}:generateContent`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json', authorization: `Bearer ${OPENAI_KEY}` },
-    body: JSON.stringify(body),
+    headers: { 'content-type': 'application/json', 'x-goog-api-key': GEMINI_KEY },
+    body: JSON.stringify({
+      contents: [{ parts: [{ text: String(prompt || 'Professional medical clinic photograph, no text') }] }],
+      generationConfig: { responseModalities: ['TEXT', 'IMAGE'] },
+    }),
   })
   const data = await res.json().catch(() => ({}))
-  if (!res.ok) throw new Error(data?.error?.message || `OpenAI retornou ${res.status}`)
-  const content = data?.choices?.[0]?.message?.content || ''
-  if (schema) {
-    try { return JSON.parse(content) } catch { return content }
-  }
-  return content
+  if (!res.ok) throw new Error(data?.error?.message || `Gemini imagens retornou ${res.status}`)
+  const parts = data?.candidates?.[0]?.content?.parts || []
+  const imagePart = parts.find((part) => part.inlineData?.data)
+  if (!imagePart) throw new Error('Gemini não devolveu imagem')
+  fs.mkdirSync(UPLOAD_DIR, { recursive: true })
+  const name = `ia-${Date.now()}-${crypto.randomBytes(6).toString('hex')}.png`
+  fs.writeFileSync(path.join(UPLOAD_DIR, name), Buffer.from(imagePart.inlineData.data, 'base64'))
+  return `/uploads/${name}`
 }
 
 async function handleApi(req, res, url) {
@@ -299,31 +344,24 @@ async function handleApi(req, res, url) {
       const prompt = String(body.prompt || '')
       if (!prompt) return json(res, 400, { error: 'Prompt vazio' })
       let result
-      if (OPENAI_KEY) {
-        try { result = await callOpenAi(prompt, body.response_json_schema || null) }
+      if (GEMINI_KEY) {
+        try { result = await callGemini(prompt, body.response_json_schema || null) }
         catch (e) { return json(res, 502, { error: `Falha na IA: ${e.message}` }) }
       } else {
         result = fallbackAi(prompt, body.response_json_schema || null)
       }
-      return json(res, 200, { result, ia_configurada: Boolean(OPENAI_KEY) })
+      return json(res, 200, { result, ia_configurada: Boolean(GEMINI_KEY), provedor: GEMINI_KEY ? 'gemini' : 'nenhum', modelo: GEMINI_MODEL })
     }
     if (req.method === 'POST' && pathname === '/api/ai/image') {
       const body = await readBody(req)
-      if (OPENAI_KEY) {
+      if (GEMINI_KEY) {
         try {
-          const resImg = await fetch('https://api.openai.com/v1/images/generations', {
-            method: 'POST',
-            headers: { 'content-type': 'application/json', authorization: `Bearer ${OPENAI_KEY}` },
-            body: JSON.stringify({ model: OPENAI_IMAGE_MODEL, prompt: String(body.prompt || 'Professional medical clinic photograph, no text'), size: '1024x1024' }),
-          })
-          const dataImg = await resImg.json().catch(() => ({}))
-          const b64 = dataImg?.data?.[0]?.b64_json
-          if (!resImg.ok || !b64) throw new Error(dataImg?.error?.message || `OpenAI imagens retornou ${resImg.status}`)
-          fs.mkdirSync(UPLOAD_DIR, { recursive: true })
-          const name = `ia-${Date.now()}-${crypto.randomBytes(6).toString('hex')}.png`
-          fs.writeFileSync(path.join(UPLOAD_DIR, name), Buffer.from(b64, 'base64'))
-          return json(res, 200, { url: `/uploads/${name}` })
-        } catch (e) { return json(res, 502, { error: `Falha ao gerar imagem: ${e.message}` }) }
+          const url = await generateGeminiImage(body.prompt)
+          return json(res, 200, { url })
+        } catch (e) {
+          console.error('Falha ao gerar imagem com Gemini, usando imagem genérica:', e.message)
+          return json(res, 200, { url: '/api/placeholder.svg' })
+        }
       }
       return json(res, 200, { url: '/api/placeholder.svg' })
     }
@@ -365,7 +403,7 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost')
   if (url.pathname === '/health') {
     res.writeHead(200, { 'content-type': 'application/json' })
-    res.end(JSON.stringify({ ok: true, app: 'gineco-ai', ia_configurada: Boolean(OPENAI_KEY), protocolos: db.protocols.length, propagandas: db.advertisements.length, historico: db.history.length, data_dir: DATA_DIR }))
+    res.end(JSON.stringify({ ok: true, app: 'gineco-ai', ia_configurada: Boolean(GEMINI_KEY), provedor: GEMINI_KEY ? 'gemini' : 'nenhum', modelo: GEMINI_MODEL, protocolos: db.protocols.length, propagandas: db.advertisements.length, historico: db.history.length, data_dir: DATA_DIR }))
     return
   }
   if (url.pathname.startsWith('/api/')) {
@@ -392,5 +430,5 @@ const server = http.createServer(async (req, res) => {
 })
 
 server.listen(PORT, () => {
-  console.log(`Gineco-AI ouvindo na porta ${PORT} (dados em ${DATA_DIR}, IA configurada: ${Boolean(OPENAI_KEY)})`)
+  console.log(`Gineco-AI ouvindo na porta ${PORT} (dados em ${DATA_DIR}, IA configurada: ${Boolean(GEMINI_KEY)} (provedor gemini))`)
 })

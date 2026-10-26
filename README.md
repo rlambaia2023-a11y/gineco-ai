@@ -12,7 +12,7 @@ próprio em Node sem dependências (`server.mjs`) servindo o build e a API.
   administrador na interface: rlambaia@yahoo.com e rlambaia2023@gmail.com.
 - Protocolos, propagandas (limite de 3 por dia por conta) e histórico salvos
   no servidor, com upload de imagem/PDF para `/uploads/`.
-- Busca por IA: com `OPENAI_API_KEY` configurada, usa a API da OpenAI.
+- Busca por IA: só Gemini, sem OpenAI. Com `GEMINI_API_KEY` configurada, usa o Gemini (Google AI Studio, grátis) pela base compatível com OpenAI do Gemini.
   Sem a chave, a busca não inventa resposta clínica: valida o escopo por
   palavras-chave e devolve um aviso honesto com as fontes oficiais
   (FEBRASGO, ACOG, OMS, PubMed). A geração de imagem sem chave devolve uma
@@ -45,9 +45,9 @@ testar o conjunto completo).
 
 - `PORT` (padrão 8080)
 - `DATA_DIR` (padrão: `/app/data` se existir, senão `./data`)
-- `OPENAI_API_KEY` (opcional; sem ela, a IA fica no modo honesto descrito acima)
-- `OPENAI_MODEL` (padrão `gpt-4o-mini`)
-- `OPENAI_IMAGE_MODEL` (padrão `gpt-image-1`)
+- `GEMINI_API_KEY` (opcional; sem ela, a IA fica no modo honesto descrito acima)
+- `GEMINI_MODEL` (padrão `gemini-3.8-flash`, com fallback automático para o mesmo modelo se o configurado der 404)
+- `GEMINI_IMAGE_MODEL` (padrão `gemini-2.5-flash-image`)
 
 ## Deploy (Railway)
 
