@@ -182,11 +182,43 @@ function fallbackAi(prompt, schema) {
   if (/propaganda|marketing médico/i.test(p)) return 'Atendimento humanizado em ginecologia e obstetrícia, com foco em cuidado, experiência e bem-estar da mulher. Agende sua consulta.'
   return `A busca por IA ainda não está configurada neste servidor, por isso não vou inventar uma resposta clínica aqui.\n\nPara ativar a busca completa, configure a variável GEMINI_API_KEY na Railway. Enquanto isso, consulte os protocolos já salvos na aba Protocolos e as fontes oficiais abaixo.\n\n## FONTES CIENTÍFICAS:\n1. FEBRASGO - Protocolos Brasileiros - https://www.febrasgo.org.br/\n2. ACOG - Guidelines Internacionais - https://www.acog.org/\n3. OMS - Diretrizes da Organização Mundial da Saúde - https://www.who.int/\n4. PubMed - Literatura Científica Indexada - https://pubmed.ncbi.nlm.nih.gov/\n\nAviso: as informações desta aplicação são para fins educacionais e de referência e não substituem o julgamento clínico nem os protocolos institucionais.`
 }
-async function callGemini(prompt, schema) {
+// Pesquisa web opcional (mesmo padrão do Meta 2 e da Correção
+// Inteligente): só roda se BRAVE_API_KEY existir e o chamador pedir
+// contexto da internet. Sem ela, o Gemini responde só com o conhecimento
+// do modelo, e o prompt continua dizendo para não inventar fontes.
+async function searchBrave(query) {
+  const key = process.env.BRAVE_API_KEY || ''
+  if (!key) return []
+  try {
+    const url = `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=5&search_lang=pt&country=BR`
+    const res = await fetch(url, { headers: { Accept: 'application/json', 'X-Subscription-Token': key } })
+    if (!res.ok) return []
+    const data = await res.json().catch(() => ({}))
+    return (data?.web?.results || []).slice(0, 5).map((x) => ({ titulo: x.title, url: x.url, trecho: x.description || '' }))
+  } catch { return [] }
+}
+function extractTopic(prompt) {
+  const m = String(prompt || '').match(/sobre\s+"([^"]{3,200})"/i)
+  if (m) return m[1]
+  const quoted = String(prompt || '').match(/"([^"]{5,200})"/)
+  return quoted ? quoted[1] : ''
+}
+
+async function callGemini(prompt, schema, withWeb = false) {
   // Gemini pela base compatível com OpenAI (mesmo padrão do Meta 2).
   // Se o modelo configurado der 404 (modelo descontinuado para novos
   // usuários, como aconteceu com o gemini-2.5-flash), tenta de novo com
   // gemini-3.8-flash, sem precisar mexer na Railway.
+  let finalPrompt = prompt
+  if (withWeb) {
+    const topic = extractTopic(prompt)
+    if (topic) {
+      const results = await searchBrave(`${topic} protocolo FEBRASGO ACOG`)
+      if (results.length) {
+        finalPrompt = `${prompt}\n\nResultados de busca na web em tempo real (use-os como base e cite apenas links desta lista, sem inventar outros):\n${results.map((r, i) => `${i + 1}. ${r.titulo} — ${r.trecho} (${r.url})`).join('\n')}`
+      }
+    }
+  }
   const models = [...new Set([GEMINI_MODEL, 'gemini-3.8-flash'])]
   let lastError = null
   for (const model of models) {
@@ -194,7 +226,7 @@ async function callGemini(prompt, schema) {
       model,
       messages: [
         { role: 'system', content: 'Você é um assistente especializado em ginecologia e obstetrícia. Responda sempre em português brasileiro, com tom profissional e baseado em evidências. Nunca invente diretriz, artigo, autor, ano ou link: se não tiver certeza de uma fonte, diga isso e cite apenas fontes oficiais conhecidas (FEBRASGO, ACOG, OMS, Ministério da Saúde, RCOG).' },
-        { role: 'user', content: prompt },
+        { role: 'user', content: finalPrompt },
       ],
       temperature: 0.3,
     }
@@ -345,7 +377,7 @@ async function handleApi(req, res, url) {
       if (!prompt) return json(res, 400, { error: 'Prompt vazio' })
       let result
       if (GEMINI_KEY) {
-        try { result = await callGemini(prompt, body.response_json_schema || null) }
+        try { result = await callGemini(prompt, body.response_json_schema || null, Boolean(body.add_context_from_internet)) }
         catch (e) { return json(res, 502, { error: `Falha na IA: ${e.message}` }) }
       } else {
         result = fallbackAi(prompt, body.response_json_schema || null)

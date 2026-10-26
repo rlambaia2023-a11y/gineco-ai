@@ -48,6 +48,7 @@ testar o conjunto completo).
 - `GEMINI_API_KEY` (opcional; sem ela, a IA fica no modo honesto descrito acima)
 - `GEMINI_MODEL` (padrão `gemini-3.8-flash`, com fallback automático para o mesmo modelo se o configurado der 404)
 - `GEMINI_IMAGE_MODEL` (padrão `gemini-2.5-flash-image`)
+- `BRAVE_API_KEY` (opcional; com ela, a busca de protocolos usa resultados reais da web antes de responder; sem ela, o Gemini responde só com o conhecimento do modelo)
 
 ## Deploy (Railway)
 

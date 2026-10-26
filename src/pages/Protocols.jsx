@@ -125,7 +125,10 @@ FORMATO DA RESPOSTA (JSON):
           }
         });
 
-        if (response.status === "ENCONTRADO") {
+        if (response.ia_configurada === false) {
+          setSearchError("Atualização automática indisponível: a IA ainda não está configurada neste servidor. Configure a GEMINI_API_KEY nas variáveis da Railway e tente de novo. O protocolo atual continua salvo abaixo.");
+          setSelectedProtocol(foundInSystem);
+        } else if (response.status === "ENCONTRADO") {
           await updateProtocolMutation.mutateAsync({
             id: foundInSystem.id,
             protocolData: {
@@ -139,10 +142,18 @@ FORMATO DA RESPOSTA (JSON):
 
           const updatedProtocols = await base44.entities.Protocol.list("-created_date");
           const updatedProtocol = updatedProtocols.find(p => p.id === foundInSystem.id);
-          
+
           setSelectedProtocol(updatedProtocol);
-          
+
           alert("Protocolo atualizado com sucesso");
+        } else if (response.status === "NÃO_RELACIONADO") {
+          setSearchError("Esta busca não está relacionada a ginecologia ou obstetrícia. O protocolo atual continua salvo abaixo.");
+          setSelectedProtocol(foundInSystem);
+        } else {
+          // NÃO_ENCONTRADO ou qualquer outro status: antes esse caminho
+          // terminava sem mostrar nada, e parecia que a busca travou.
+          setSearchError("Não encontramos uma versão atualizada deste protocolo nas fontes oficiais. O protocolo atual continua salvo abaixo.");
+          setSelectedProtocol(foundInSystem);
         }
         
       } catch (error) {
@@ -193,6 +204,12 @@ FORMATO DA RESPOSTA (JSON):
           }
         }
       });
+
+      if (response.ia_configurada === false) {
+        setSearchError("Busca de protocolo indisponível: a IA ainda não está configurada neste servidor. Configure a GEMINI_API_KEY nas variáveis da Railway e tente de novo.");
+        setIsSearching(false);
+        return;
+      }
 
       if (response.status === "NÃO_RELACIONADO") {
         setSearchError("Esta busca não está relacionada a ginecologia ou obstetrícia.");

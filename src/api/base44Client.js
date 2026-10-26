@@ -90,8 +90,14 @@ export const base44 = {
   },
   integrations: {
     Core: {
-      InvokeLLM: async ({ prompt, response_json_schema }) => {
-        const data = await api('/api/ai/invoke', { method: 'POST', body: JSON.stringify({ prompt, response_json_schema: response_json_schema || null }) })
+      InvokeLLM: async ({ prompt, response_json_schema, add_context_from_internet }) => {
+        const data = await api('/api/ai/invoke', { method: 'POST', body: JSON.stringify({ prompt, response_json_schema: response_json_schema || null, add_context_from_internet: Boolean(add_context_from_internet) }) })
+        // Preserva o aviso de IA não configurada: sem isso, o caminho de
+        // atualização de protocolo existente falhava em silêncio (o
+        // servidor devolvia NÃO_ENCONTRADO e a página não mostrava nada).
+        if (data.result && typeof data.result === 'object') {
+          data.result.ia_configurada = data.ia_configurada
+        }
         return data.result
       },
       UploadFile: async ({ file }) => {
