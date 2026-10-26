@@ -7,8 +7,8 @@
 //      Sem volume, os dados são efêmeros.
 //    - Senhas: scrypt com salt, nunca em texto claro. Tokens aleatórios.
 //    - IA: só Gemini, sem OpenAI. Se GEMINI_API_KEY estiver configurada,
-//      chama o Gemini pela base compatível com OpenAI
-//      (https://generativelanguage.googleapis.com/v1beta/openai/),
+//      chama o Gemini pela API nativa generateContent
+//      (https://generativelanguage.googleapis.com/v1beta/models/...:generateContent),
 //      modelo GEMINI_MODEL (padrão gemini-3.8-flash, com fallback para o
 //      mesmo modelo se o configurado der 404). Imagem pelo modelo
 //      gemini-2.5-flash-image da API nativa do Gemini.
@@ -228,7 +228,7 @@ async function callGemini(prompt, schema, withWeb = false) {
   const models = [...new Set([GEMINI_MODEL, 'gemini-3.8-flash', 'gemini-3.7-flash'])]
   let lastError = null
   for (const model of models) {
-   for (let attempt = 1; attempt <= 3; attempt++) {
+   for (let attempt = 1; attempt <= 2; attempt++) {
     const body = {
       model,
       messages: [
@@ -239,38 +239,45 @@ async function callGemini(prompt, schema, withWeb = false) {
     }
     if (schema) body.response_format = { type: 'json_object' }
     // Sem timeout, um fetch travado do Gemini deixava a chamada da IA
-    // pendurada por minutos (visto ao vivo em 2026-10-26). Limite de 45s
+    // pendurada por minutos (visto ao vivo em 2026-10-26). Limite de 30s
     // por tentativa e teto total de 90s para a chamada inteira.
     const startedAt = callGemini.startedAt || (callGemini.startedAt = Date.now())
     if (Date.now() - startedAt > 90000) throw lastError || new Error('Gemini demorou mais de 90s para responder')
+    // API nativa do Gemini (generateContent), em vez da base compatível
+    // com OpenAI: a base compatível ficava pendurada mais de 45s por
+    // tentativa ao vivo em 2026-10-26, sem responder. A nativa usa a
+    // mesma chave GEMINI_API_KEY, só muda o formato da chamada.
     const controller = new AbortController()
-    const timer = setTimeout(() => controller.abort(), 45000)
+    const timer = setTimeout(() => controller.abort(), 30000)
     let res
     try {
-      res = await fetch(`${GEMINI_BASE}/chat/completions`, {
+      res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
         method: 'POST',
-        headers: { 'content-type': 'application/json', authorization: `Bearer ${GEMINI_KEY}` },
-        body: JSON.stringify(body),
+        headers: { 'content-type': 'application/json', 'x-goog-api-key': GEMINI_KEY },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: `Você é um assistente especializado em ginecologia e obstetrícia. Responda sempre em português brasileiro, com tom profissional e baseado em evidências. Nunca invente diretriz, artigo, autor, ano ou link: se não tiver certeza de uma fonte, diga isso e cite apenas fontes oficiais conhecidas (FEBRASGO, ACOG, OMS, Ministério da Saúde, RCOG).\n\n${finalPrompt}` }] }],
+          generationConfig: Object.assign({ temperature: 0.3 }, schema ? { responseMimeType: 'application/json' } : {}),
+        }),
         signal: controller.signal,
       })
     } catch (e) {
       clearTimeout(timer)
-      lastError = new Error(e.name === 'AbortError' ? 'Gemini demorou mais de 45s para responder' : e.message)
-      if (attempt < 3) { await new Promise((r) => setTimeout(r, attempt * 3000)); continue }
+      lastError = new Error(e.name === 'AbortError' ? 'Gemini demorou mais de 30s para responder' : e.message)
+      if (attempt < 2) { await new Promise((r) => setTimeout(r, attempt * 3000)); continue }
       break
     }
     clearTimeout(timer)
     const data = await res.json().catch(() => ({}))
     if (!res.ok) {
       lastError = new Error(data?.error?.message || `Gemini retornou ${res.status}`)
-      if (res.status === 503 && attempt < 3) {
+      if (res.status === 503 && attempt < 2) {
         await new Promise((r) => setTimeout(r, attempt * 3000))
         continue
       }
       if (res.status !== 404 || model === models[models.length - 1]) break
       continue
     }
-    const content = data?.choices?.[0]?.message?.content || ''
+    const content = (data?.candidates?.[0]?.content?.parts || []).map((part) => part.text || '').join('').trim()
     if (schema) {
       const clean = String(content).replace(/```json|```/g, '').trim()
       const start = clean.indexOf('{')
