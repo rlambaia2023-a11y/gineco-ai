@@ -9,6 +9,7 @@ import Layout from './Layout';
 import Home from './pages/Home';
 import Protocols from './pages/Protocols';
 import Search from './pages/Search';
+import CaseAnalysis from './pages/CaseAnalysis';
 import History from './pages/History';
 import Credits from './pages/Credits';
 import Calculator from './pages/Calculator';
@@ -48,6 +49,7 @@ const AuthenticatedApp = () => {
       <Route path="/Home" element={withLayout(<Home />)} />
       <Route path="/Protocols" element={withLayout(<Protocols />)} />
       <Route path="/Search" element={withLayout(<Search />)} />
+      <Route path="/CaseAnalysis" element={withLayout(<CaseAnalysis />)} />
       <Route path="/History" element={withLayout(<History />)} />
       <Route path="/Credits" element={withLayout(<Credits />)} />
       <Route path="/Calculator" element={withLayout(<Calculator />)} />

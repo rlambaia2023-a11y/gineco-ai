@@ -88,6 +88,13 @@ export const base44 = {
     Advertisement: entity('Advertisement'),
     SearchHistory: entity('SearchHistory'),
   },
+  cases: {
+    list: (onlyFavorites) => api(`/api/casos${onlyFavorites ? '?favoritos=1' : ''}`),
+    get: (id) => api(`/api/casos/${id}`),
+    analyze: (data) => api('/api/casos/analisar', { method: 'POST', body: JSON.stringify(data) }),
+    toggleFavorite: (id) => api(`/api/casos/${id}/favorito`, { method: 'POST', body: JSON.stringify({}) }),
+    delete: (id) => api(`/api/casos/${id}`, { method: 'DELETE' }),
+  },
   integrations: {
     Core: {
       InvokeLLM: async ({ prompt, response_json_schema, add_context_from_internet }) => {

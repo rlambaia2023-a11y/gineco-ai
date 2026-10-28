@@ -61,6 +61,11 @@ const navigationItems = [
     icon: Search,
   },
   {
+    title: "Análise de caso",
+    url: createPageUrl("CaseAnalysis"),
+    icon: Stethoscope,
+  },
+  {
     title: "Publicidade",
     url: createPageUrl("Publicidade"),
     icon: Megaphone,

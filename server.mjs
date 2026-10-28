@@ -67,9 +67,10 @@ function loadDb() {
     db.protocols ||= []
     db.advertisements ||= []
     db.history ||= []
+    db.cases ||= []
     return db
   } catch {
-    return { users: {}, tokens: {}, protocols: [], advertisements: [], history: [] }
+    return { users: {}, tokens: {}, protocols: [], advertisements: [], history: [], cases: [] }
   }
 }
 function saveDb(db) {
@@ -235,6 +236,87 @@ function findCachedAiResult(prompt) {
   return null
 }
 
+// ---------- Análise de caso clínico (novo módulo, código próprio) ----------
+// Função inspirada no que um app de apoio clínico faz (caso, hipóteses,
+// exames, conduta, referências), refeita do zero para ginecologia e
+// obstetrícia, dentro do Gineco-AI. Não copia nome, visual ou código de
+// nenhum app. A análise é só apoio ao raciocínio: nunca fecha diagnóstico
+// sozinha, nunca prescreve sozinha e nunca substitui o julgamento do
+// profissional. O caso deve chegar anonimizado (sem nome, CPF, endereço
+// ou qualquer identificador); o servidor não tenta identificar ninguém.
+function findCachedCase(caso, examesTexto, email) {
+  const alvo = normText(`${caso} ${examesTexto || ''}`)
+  if (alvo.length < 20) return null
+  for (const entry of [...db.cases].reverse()) {
+    if (entry.created_by !== email || !entry.analise) continue
+    if (normText(`${entry.caso} ${entry.examesTexto || ''}`) === alvo) return entry
+  }
+  return null
+}
+function normAnalise(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
+  const strList = (v) => Array.isArray(v) ? v.filter((x) => typeof x === 'string').map((x) => x.slice(0, 1000)).slice(0, 20) : []
+  const hipoteses = Array.isArray(raw.hipoteses) ? raw.hipoteses.slice(0, 5).map((h) => ({
+    nome: cleanStr(h?.nome, 300),
+    probabilidade: ['alta', 'media', 'baixa'].includes(h?.probabilidade) ? h.probabilidade : 'media',
+    aFavor: strList(h?.aFavor),
+    contra: strList(h?.contra),
+    proximoPasso: cleanStr(h?.proximoPasso, 1000),
+  })).filter((h) => h.nome) : []
+  if (!hipoteses.length) return null
+  return {
+    alertas: strList(raw.alertas),
+    hipoteses,
+    exames: Array.isArray(raw.exames) ? raw.exames.slice(0, 15).map((e) => ({
+      nome: cleanStr(e?.nome, 300),
+      motivo: cleanStr(e?.motivo, 1000),
+      quando: e?.quando === 'se indicado' ? 'se indicado' : 'recomendado',
+      prioridade: e?.prioridade === 'imediata' ? 'imediata' : 'rotina',
+    })).filter((e) => e.nome) : [],
+    conduta: strList(raw.conduta),
+    prescricaoRascunho: cleanStr(raw.prescricaoRascunho, 5000),
+    referencias: Array.isArray(raw.referencias) ? raw.referencias.slice(0, 10).map((r) => ({
+      titulo: cleanStr(r?.titulo, 300),
+      fonte: cleanStr(r?.fonte, 200),
+      url: cleanStr(r?.url, 1000),
+      confirmado: r?.confirmado === true,
+    })).filter((r) => r.titulo) : [],
+    resumo: cleanStr(raw.resumo, 2000),
+  }
+}
+function buildCasePrompt(caso, examesTexto) {
+  const protocolos = db.protocols.slice(0, 13).map((p) => `- ${p.name}: ${String(p.summary || '').slice(0, 200)}`).join('\n')
+  return `Analise o caso clínico abaixo, de ginecologia ou obstetrícia, como professor clínico. O caso chegou anonimizado, sem identificadores, e deve continuar assim: não peça nem invente nome, CPF ou dados pessoais.
+
+Devolva SOMENTE um objeto JSON com exatamente estes campos, sem texto fora do JSON:
+{
+  "alertas": ["sinal de alerta, se houver"],
+  "hipoteses": [{"nome": "", "probabilidade": "alta|media|baixa", "aFavor": [""], "contra": [""], "proximoPasso": ""}],
+  "exames": [{"nome": "", "motivo": "", "quando": "recomendado|se indicado", "prioridade": "imediata|rotina"}],
+  "conduta": ["passo curto de conduta"],
+  "prescricaoRascunho": "rascunho para revisão e assinatura do profissional, ou string vazia se não houver nada a sugerir",
+  "referencias": [{"titulo": "", "fonte": "", "url": "", "confirmado": true}],
+  "resumo": "resumo em até 3 frases"
+}
+
+Regras obrigatórias:
+1. No máximo 5 hipóteses, ordenadas da mais para a menos provável, cada uma com o que fala a favor e o que fala contra.
+2. Exames só os que mudam a conduta; marque "se indicado" quando o exame depender de um achado ou de uma hipótese.
+3. Conduta em passos curtos, sem fechar diagnóstico sozinho e sem prescrever sozinho: a prescrição, quando houver, vai só no campo prescricaoRascunho, como rascunho para revisão e assinatura.
+4. Se houver sinal de emergência (sangramento intenso, dor intensa, febre alta, pré-eclâmpsia grave, sofrimento fetal, choque ou outro risco imediato), o primeiro alerta deve dizer, em linguagem direta, para atendimento de emergência imediato, sem esperar a IA.
+5. Referências: cite SOMENTE os protocolos salvos listados abaixo e fontes oficiais (FEBRASGO, ACOG, OMS, Ministério da Saúde, RCOG). Se não tiver certeza de uma referência, ponha confirmado:false e não invente ano, autor ou link; se não houver referência segura, devolva a lista vazia.
+6. Nunca invente diretriz, artigo, autor, ano ou link.
+
+Protocolos salvos no sistema:
+${protocolos || '(nenhum protocolo salvo)'}
+
+Caso:
+"""${caso}"""
+
+Exames já disponíveis (texto informado pelo profissional):
+"""${examesTexto || '(nenhum informado)'}"""`
+}
+
 async function callGemini(prompt, schema, withWeb = false) {
   callGemini.startedAt = Date.now()
   // Gemini pela base compatível com OpenAI (mesmo padrão do Meta 2).
@@ -387,6 +469,67 @@ async function handleApi(req, res, url) {
       return json(res, 400, { error: 'Token de redefinição inválido ou expirado. A redefinição por e-mail ainda não está ativa.' })
     }
 
+    // Análise de caso clínico — só para profissional logado, porque um
+    // caso, mesmo anonimizado, não é busca pública: é raciocínio clínico.
+    // O histórico de casos é só do próprio usuário logado.
+    const casoMatch = pathname.match(/^\/api\/casos(?:\/([^/]+))?(\/favorito)?$/)
+    if (casoMatch) {
+      const email = authEmail(req)
+      if (!email || !db.users[email]) return json(res, 401, { error: 'Entre com sua conta para analisar um caso.' })
+      const id = casoMatch[1]
+      const isFavorito = Boolean(casoMatch[2])
+      if (req.method === 'GET' && !id) {
+        let list = db.cases.filter((c) => c.created_by === email)
+        if (url.searchParams.get('favoritos') === '1') list = list.filter((c) => c.favorito)
+        list = [...list].sort((a, b) => String(b.created_date).localeCompare(String(a.created_date)))
+        return json(res, 200, list)
+      }
+      if (req.method === 'GET' && id && !isFavorito) {
+        const item = db.cases.find((c) => c.id === id && c.created_by === email)
+        return item ? json(res, 200, item) : json(res, 404, { error: 'Caso não encontrado' })
+      }
+      if (req.method === 'POST' && id === 'analisar') {
+        const body = await readBody(req)
+        const caso = cleanStr(body.caso, 5000)
+        const examesTexto = cleanStr(body.examesTexto, 5000)
+        if (caso.trim().length < 20) return json(res, 400, { error: 'Descreva o caso com mais detalhes (pelo menos 20 caracteres), sem nome, CPF ou endereço.' })
+        if (!inScope(caso)) return json(res, 400, { error: 'Esta ferramenta é só para ginecologia, obstetrícia e saúde da mulher.' })
+        const cached = findCachedCase(caso, examesTexto, email)
+        if (cached) return json(res, 200, { ...cached, cache: true })
+        if (!GEMINI_KEY) return json(res, 503, { error: 'IA não configurada. Configure GEMINI_API_KEY nas variáveis da Railway para analisar casos — sem chave, nenhuma análise é inventada.', ia_configurada: false })
+        let raw
+        try { raw = await callGemini(buildCasePrompt(caso, examesTexto), true, false) }
+        catch (e) {
+          const msg = String(e.message || '')
+          if (/quota exceeded|exceeded your current quota/i.test(msg)) return json(res, 502, { error: 'Cota gratuita do Gemini esgotada para o modelo em uso. Tente de novo mais tarde; nenhum caso foi salvo como analisado.' })
+          return json(res, 502, { error: `Falha na IA: ${msg}` })
+        }
+        const analise = normAnalise(raw)
+        if (!analise) return json(res, 502, { error: 'A IA devolveu um formato inválido para a análise. Tente de novo; nenhum caso foi salvo como analisado.' })
+        const now = new Date().toISOString()
+        const item = { id: crypto.randomUUID(), created_date: now, updated_date: now, created_by: email, caso, examesTexto, analise, favorito: false, cache: false, modelo: GEMINI_EFFECTIVE_MODEL }
+        db.cases.unshift(item)
+        saveDb(db)
+        return json(res, 201, item)
+      }
+      if (req.method === 'POST' && id && isFavorito) {
+        const item = db.cases.find((c) => c.id === id && c.created_by === email)
+        if (!item) return json(res, 404, { error: 'Caso não encontrado' })
+        item.favorito = !item.favorito
+        item.updated_date = new Date().toISOString()
+        saveDb(db)
+        return json(res, 200, item)
+      }
+      if (req.method === 'DELETE' && id && !isFavorito) {
+        const before = db.cases.length
+        db.cases = db.cases.filter((c) => !(c.id === id && c.created_by === email))
+        if (db.cases.length === before) return json(res, 404, { error: 'Caso não encontrado' })
+        saveDb(db)
+        return json(res, 200, { ok: true })
+      }
+      return json(res, 405, { error: 'Método não permitido' })
+    }
+
     // Entidades
     const entityMatch = pathname.match(/^\/api\/entities\/([A-Za-z]+)(?:\/([^/]+))?$/)
     if (entityMatch) {
@@ -521,7 +664,7 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost')
   if (url.pathname === '/health') {
     res.writeHead(200, { 'content-type': 'application/json' })
-    res.end(JSON.stringify({ ok: true, app: 'gineco-ai', ia_configurada: Boolean(GEMINI_KEY), provedor: GEMINI_KEY ? 'gemini' : 'nenhum', modelo: GEMINI_EFFECTIVE_MODEL, modelo_configurado: GEMINI_MODEL, protocolos: db.protocols.length, propagandas: db.advertisements.length, historico: db.history.length, data_dir: DATA_DIR }))
+    res.end(JSON.stringify({ ok: true, app: 'gineco-ai', ia_configurada: Boolean(GEMINI_KEY), provedor: GEMINI_KEY ? 'gemini' : 'nenhum', modelo: GEMINI_EFFECTIVE_MODEL, modelo_configurado: GEMINI_MODEL, protocolos: db.protocols.length, propagandas: db.advertisements.length, historico: db.history.length, casos: (db.cases || []).length, data_dir: DATA_DIR }))
     return
   }
   if (url.pathname.startsWith('/api/')) {

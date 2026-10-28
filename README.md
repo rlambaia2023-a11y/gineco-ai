@@ -8,6 +8,14 @@ próprio em Node sem dependências (`server.mjs`) servindo o build e a API.
 
 - Início, Protocolos, Calculadoras (DUM, USG, peso fetal Hadlock, Bishop),
   Busca Inteligente, Publicidade, Histórico e Créditos, tudo em pt-BR.
+- Análise de caso clínico (desde 2026-10-28, módulo novo, código próprio):
+  profissional logado descreve um caso anonimizado e recebe hipóteses
+  ranqueadas com a favor e contra, sinais de alerta, exames sugeridos
+  (com "se indicado"), conduta em passos e referências, em abas
+  Hipóteses, Exames, Conduta e Referências, com histórico próprio e
+  favoritos. A prescrição, quando aparece, é só rascunho para revisão e
+  assinatura. Sem chave do Gemini, nenhuma análise é inventada. O caso
+  nunca deve ter nome, CPF, endereço ou qualquer identificador.
 - Login local com e-mail e senha (scrypt, token aleatório). Contas de
   administrador na interface: rlambaia@yahoo.com e rlambaia2023@gmail.com.
 - Protocolos, propagandas (limite de 3 por dia por conta) e histórico salvos
@@ -56,7 +64,26 @@ Dockerfile + `railway.json`. O serviço precisa de um volume montado em
 `/app/data` para os dados (protocolos, propagandas, histórico, uploads e
 contas) sobreviverem a redeploys. Sem volume, os dados são efêmeros.
 
+## Análise de caso: limites honestos
+
+- Só ginecologia, obstetrícia e saúde da mulher. Fora disso, o servidor
+  recusa com 400, em vez de responder outro assunto.
+- Só para profissional logado. O histórico de casos é só do próprio
+  usuário; outra conta vê lista vazia e recebe 404 no caso alheio.
+- Caso idêntico já analisado volta do histórico, sem gastar cota do
+  Gemini. Em cota 429, o servidor para na hora, sem tentar outro modelo.
+- Referências: só protocolos salvos no sistema e fontes oficiais
+  (FEBRASGO, ACOG, OMS, Ministério da Saúde, RCOG). Referência não
+  confirmada aparece marcada como tal; sem referência segura, a lista
+  vem vazia, em vez de inventar artigo, autor, ano ou link.
+- Endpoints: `GET /api/casos`, `GET /api/casos/:id`,
+  `POST /api/casos/analisar`, `POST /api/casos/:id/favorito`,
+  `DELETE /api/casos/:id`.
+
 ## Aviso importante
 
 As informações são para fins educacionais e de referência. Não substituem
-o julgamento clínico nem os protocolos institucionais.
+o julgamento clínico nem os protocolos institucionais. A análise de caso
+é apoio ao raciocínio: não fecha diagnóstico sozinha, não prescreve
+sozinha e, em sinal de emergência, a orientação é atendimento de
+emergência imediato, sem esperar a IA.
